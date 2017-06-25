@@ -18,5 +18,11 @@ namespace LinkedinBot.Configuration
         {
             get { return ((VacanciesCollection)(this["vacancies"])); }
         }
+
+        [ConfigurationProperty("regions")]
+        public RegionsCollection RegionsItems
+        {
+            get { return ((RegionsCollection)(this["regions"])); }
+        }
     }
 }

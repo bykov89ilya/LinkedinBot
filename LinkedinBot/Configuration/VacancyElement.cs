@@ -22,6 +22,15 @@ namespace LinkedinBot.Configuration
             }
         }
 
+        [ConfigurationProperty("searchWord")]
+        public string SearchWord
+        {
+            get
+            {
+                return (string)this["searchWord"];
+            }
+        }
+
         [ConfigurationProperty("keyWords")]
         public KeyWordsCollection keyWords
         {
