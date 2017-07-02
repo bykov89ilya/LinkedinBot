@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Linq;
 using System.Threading;
 using System.Web;
+using System.Xml.Linq;
 using LinkedinBot.Configuration;
 using NLog;
 using OpenQA.Selenium;
@@ -15,9 +17,11 @@ namespace LinkedinBot
         public IWebDriver Driver;
         private readonly JobVacanciesConfigSection _jobVacanciesConfigSection;
         private Logger logger = LogManager.GetCurrentClassLogger();
+        private IEnumerable<Account> visitedAccounts;
 
         public WebTraveler()
         {
+            logger.Trace("Старт приложения");
             Driver = new ChromeDriver();
             _jobVacanciesConfigSection = (JobVacanciesConfigSection)ConfigurationManager.GetSection("jobVacancies");
         }
@@ -31,6 +35,7 @@ namespace LinkedinBot
         {
             Driver.Manage().Window.Maximize();
             Driver.Navigate().GoToUrl("https://linkedin.com");
+            Thread.Sleep(TimeSpan.FromSeconds(10));
         }
 
         public void Authorize()
@@ -42,6 +47,9 @@ namespace LinkedinBot
             var passwordTextBox = Driver.FindElement(By.Id("login-password"));
             passwordTextBox.Click();
             passwordTextBox.SendKeys(ConfigurationManager.AppSettings["password"]);
+
+            Thread.Sleep(TimeSpan.FromSeconds(10));
+
             passwordTextBox.Submit();
         }
 
@@ -49,7 +57,7 @@ namespace LinkedinBot
         {
             var script = String.Format("window.scrollTo({0}, {1})", 0, 12000);
             ((IJavaScriptExecutor)Driver).ExecuteScript(script);
-            Thread.Sleep(TimeSpan.FromSeconds(10));
+            Thread.Sleep(TimeSpan.FromSeconds(2));
         }
 
         private void ScrollDownBySteps()
@@ -66,7 +74,7 @@ namespace LinkedinBot
         {
             var script = String.Format("window.scrollTo({0}, {1})", 0, 0);
             ((IJavaScriptExecutor)Driver).ExecuteScript(script);
-            Thread.Sleep(TimeSpan.FromSeconds(10));
+            Thread.Sleep(TimeSpan.FromSeconds(2));
         }
 
         private void ScrollToCoordinates(int x, int y)
@@ -75,22 +83,54 @@ namespace LinkedinBot
             y = y - 300;
             var script = String.Format("window.scrollTo({0}, {1})", x, y);
             ((IJavaScriptExecutor)Driver).ExecuteScript(script);
-            Thread.Sleep(TimeSpan.FromSeconds(10));
+            Thread.Sleep(TimeSpan.FromSeconds(2));
         }
 
         public void GoSearch()
         {
             var pattern = "https://www.linkedin.com/search/results/people/?facetGeoRegion=%5B%22ru%3A{0}%22%5D&facetNetwork=%5B%22S%22%2C%22O%22%5D&keywords={1}&origin=GLOBAL_SEARCH_HEADER&page={2}";
 
-            // Enumerate regions
-            foreach (RegionElement region in _jobVacanciesConfigSection.RegionsItems)
+            // Enumerate vacancies 
+            foreach (VacancyElement vacancy in _jobVacanciesConfigSection.VacanciesItems)
             {
-                logger.Trace("Исследуем регион: {0}", region.Place);
+                logger.Trace("Ищем людей на вакансию {0} c id {1}", vacancy.Description, vacancy.Id);
 
-                // Enumerate vacancies
-                foreach (VacancyElement vacancy in _jobVacanciesConfigSection.VacanciesItems)
+                // Enumerate regions
+                foreach (RegionElement region in _jobVacanciesConfigSection.RegionsItems)
                 {
-                    logger.Trace("Ищем людей на вакансию {0} c id {1}", vacancy.Description, vacancy.Id);
+                    logger.Trace("Исследуем регион: {0}", region.Description);
+
+                    xmlHelper.Load();
+
+                    var employes = xmlHelper.doc
+                                .Element("employes");
+
+                    if (!employes
+                        .Elements()
+                        .Any(node => node.Attribute("id").Value == vacancy.Id.ToString()))
+                    {
+                        employes.Add(
+                            new XElement("employee",
+                                new XAttribute("id", vacancy.Id.ToString())));
+                        xmlHelper.Save();
+                    }
+
+                    var employesById = employes
+                        .Elements().Where(node => node.Attribute("id").Value == vacancy.Id.ToString())
+                        .Elements();
+
+                    if (employesById.Any())
+                    {
+                        visitedAccounts = employesById
+                            .Select(node => new Account
+                            {
+                                Link = node.Attribute("link").Value,
+                                Region = node.Attribute("region").Value,
+                                Skills = node.Element("skills")
+                                    .Elements()
+                                    .Select(sk => sk.Value)
+                            });
+                    }
 
                     // Enumerate pages
                     for (int page = 1; page <= 100; page++)
@@ -101,6 +141,7 @@ namespace LinkedinBot
                         Driver.Navigate().GoToUrl(urlToAnalyse);
 
                         logger.Trace("Анализируем страницу {0}, переходя по url {1}", page, urlToAnalyse);
+                        ScreenshotHelper.Make(vacancy.Id, "PageLoaded");
 
                         ScrollDown();
 
@@ -113,7 +154,8 @@ namespace LinkedinBot
                         // Enumerate accounts on page
                         foreach (var link in accountLinks)
                         {
-                            logger.Trace("Анализируем ссылку на аккаунт {0}", link.Text);
+                            var urlLink = link.GetAttribute("href");
+                            logger.Trace("Анализируем ссылку {0} на аккаунт {1}", urlLink, link.Text);
 
                             try
                             {
@@ -122,6 +164,12 @@ namespace LinkedinBot
                                 {
                                     logger.Trace(
                                         "Справа от ссылки на аккаунт нет кнопки \"Установить контакт\", текст на кнопке \"{0}\"", buttonMakeContact.Text);
+                                    continue;
+                                }
+                                else if(visitedAccounts.Where(a => a.Link  == urlLink).Any())
+                                {
+                                    logger.Trace(
+                                        "Ссылка {0} уже анализировалась для вакансии {1}", urlLink, vacancy.SearchWord);
                                     continue;
                                 }
                                 else
@@ -136,10 +184,10 @@ namespace LinkedinBot
 
                             var mainWindowHandle = Driver.WindowHandles[0];
                             var scriptExecutor = (IJavaScriptExecutor)Driver;
-                            scriptExecutor.ExecuteScript(string.Format("window.open('{0}', '_blank');", link.GetAttribute("href")));
+                            scriptExecutor.ExecuteScript(string.Format("window.open('{0}', '_blank');", urlLink));
                             var newWindowHandle = Driver.WindowHandles[1];
                             Driver.SwitchTo().Window(newWindowHandle);
-                            Thread.Sleep(TimeSpan.FromSeconds(30));
+                            Thread.Sleep(TimeSpan.FromSeconds(40));
 
                             ScrollDownBySteps();
 
@@ -154,8 +202,33 @@ namespace LinkedinBot
                             foreach (var skill in skills)
                             {
                                 logger.Trace("Найден скилл {0}", skill.Text);
-                                textSkills.Add(skill.Text); 
+                                textSkills.Add(skill.Text.ToLower()); 
                             }
+
+                            xmlHelper.doc
+                                .Element("employes")
+                                .Elements()
+                                .Where(node => node.Attribute("id").Value == vacancy.Id.ToString())
+                                .First()
+                                .Add(new XElement("employee", 
+                                    new XAttribute("link", urlLink),
+                                    new XAttribute("region", region.Description)));
+
+                            xmlHelper.Save();
+                            xmlHelper.Load();
+
+                            xmlHelper.doc
+                                .Element("employes")
+                                .Elements()
+                                .Where(node => node.Attribute("id").Value == vacancy.Id.ToString())
+                                .First()
+                                .Elements().Where(n => n.Attribute("link").Value == urlLink)
+                                .First()
+                                .Add(new XElement("skills",
+                                    textSkills.Select(skill => new XElement("skill", skill))));
+
+                            xmlHelper.Save();
+
                             var existKeyWordsOnPage = true;
                             foreach (KeyWordElement keyWord in vacancy.keyWords)
                             {
@@ -163,7 +236,7 @@ namespace LinkedinBot
                                 var words = keyWord.Word.Split(new[] { '|' });
                                 foreach (var word in words)
                                 {
-                                    if (textSkills.Contains(word))
+                                    if (textSkills.Contains(word.ToLower()))
                                     {
                                         existKeyWordsOnPage = true;
                                         break;
@@ -236,6 +309,7 @@ namespace LinkedinBot
                     }
                 }
             }
+            logger.Trace("Завершение приложения");
         }
     }
 }

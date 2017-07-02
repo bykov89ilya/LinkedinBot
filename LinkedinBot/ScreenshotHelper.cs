@@ -10,6 +10,13 @@ namespace LinkedinBot
         private static DirectoryInfo directoryForScreenshots = new DirectoryInfo(
             Path.Combine(Directory.GetCurrentDirectory(), "Screenshots"));
 
+        static ScreenshotHelper()
+        {
+            if (Directory.Exists(directoryForScreenshots.FullName)) return;
+
+            Directory.CreateDirectory(directoryForScreenshots.FullName);
+        }
+
         public static void Make(int id, string postfix)
         {
             Graphics graph = null;
