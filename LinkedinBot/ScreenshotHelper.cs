@@ -33,7 +33,7 @@ namespace LinkedinBot
 
         private static string GetCorretDateTime()
         {
-            return DateTime.Now.ToString("yy_MM_dd_h_m_s");
+            return DateTime.Now.ToString("yy_MM_dd_HH_m_s");
         }
     }
 }

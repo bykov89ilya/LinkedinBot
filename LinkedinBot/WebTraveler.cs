@@ -35,7 +35,6 @@ namespace LinkedinBot
         {
             Driver.Manage().Window.Maximize();
             Driver.Navigate().GoToUrl("https://linkedin.com");
-            Thread.Sleep(TimeSpan.FromSeconds(10));
         }
 
         public void Authorize()
@@ -47,8 +46,6 @@ namespace LinkedinBot
             var passwordTextBox = Driver.FindElement(By.Id("login-password"));
             passwordTextBox.Click();
             passwordTextBox.SendKeys(ConfigurationManager.AppSettings["password"]);
-
-            Thread.Sleep(TimeSpan.FromSeconds(10));
 
             passwordTextBox.Submit();
         }
@@ -66,7 +63,6 @@ namespace LinkedinBot
             {
                 var script = String.Format("window.scrollTo({0}, {1})", 0, i);
                 ((IJavaScriptExecutor)Driver).ExecuteScript(script);
-                Thread.Sleep(TimeSpan.FromSeconds(2));
             }
         }
 
@@ -86,6 +82,28 @@ namespace LinkedinBot
             Thread.Sleep(TimeSpan.FromSeconds(2));
         }
 
+        public void Retry(Action action, int delay, int count)
+        {
+            var currentCount = 0;
+            while (true)
+            {
+                try
+                {
+                    action();
+                    break;
+                }
+                catch(Exception ex)
+                {
+                    Thread.Sleep(TimeSpan.FromSeconds(delay));
+                    currentCount++;
+                    if (currentCount >= count)
+                    {
+                        throw ex;
+                    }
+                }
+            }
+        }
+
         public void GoSearch()
         {
             var pattern = "https://www.linkedin.com/search/results/people/?facetGeoRegion=%5B%22ru%3A{0}%22%5D&facetNetwork=%5B%22S%22%2C%22O%22%5D&keywords={1}&origin=GLOBAL_SEARCH_HEADER&page={2}";
@@ -93,7 +111,7 @@ namespace LinkedinBot
             // Enumerate vacancies 
             foreach (VacancyElement vacancy in _jobVacanciesConfigSection.VacanciesItems)
             {
-                logger.Trace("Ищем людей на вакансию {0} c id {1}", vacancy.Description, vacancy.Id);
+                logger.Trace("Ищем людей на вакансию {0} c id {1}", vacancy.SearchWord, vacancy.Id);
 
                 // Enumerate regions
                 foreach (RegionElement region in _jobVacanciesConfigSection.RegionsItems)
@@ -129,11 +147,11 @@ namespace LinkedinBot
                                 Skills = node.Element("skills")
                                     .Elements()
                                     .Select(sk => sk.Value)
-                            });
+                            }).ToList();
                     }
 
                     // Enumerate pages
-                    for (int page = 1; page <= 100; page++)
+                    for (int page = vacancy.PageFrom; page <= vacancy.PageTo; page++)
                     {
                         var urlToAnalyse = string.Format(pattern,
                             region.Place, HttpUtility.UrlEncode(vacancy.SearchWord), page);
@@ -141,15 +159,31 @@ namespace LinkedinBot
                         Driver.Navigate().GoToUrl(urlToAnalyse);
 
                         logger.Trace("Анализируем страницу {0}, переходя по url {1}", page, urlToAnalyse);
-                        ScreenshotHelper.Make(vacancy.Id, "PageLoaded");
 
-                        ScrollDown();
+                        Retry(
+                            action: ScrollDown,
+                            delay: 1,
+                            count: 20);
 
                         var accountLinks = Driver.FindElements(By.XPath("//div[contains(@class,'search-result__info')]/a"));
 
                         logger.Trace("Количество аккаунтов на странице {0}", accountLinks.Count);
 
-                        if (accountLinks.Count == 0) break;
+                        if (accountLinks.Count == 0)
+                        {
+                            ScreenshotHelper.Make(vacancy.Id, "notFoundContacts_" + region.Description + page);
+
+                            var notFoundResultsElements = Driver.FindElements(By.XPath("//*[contains(text(),'Результаты не найдены.')]"));
+
+                            if (notFoundResultsElements.Count > 0) break;
+                            else
+                            {
+                                logger.Trace("Возможно пропал интернет, посмотри скриншот foundContacts, или нет заглушки результаты не найдены");
+                                break;
+                                //т.к. 
+                                //throw new Exception("Пропал интернет");
+                            }
+                        }
 
                         // Enumerate accounts on page
                         foreach (var link in accountLinks)
@@ -166,10 +200,16 @@ namespace LinkedinBot
                                         "Справа от ссылки на аккаунт нет кнопки \"Установить контакт\", текст на кнопке \"{0}\"", buttonMakeContact.Text);
                                     continue;
                                 }
-                                else if(visitedAccounts.Where(a => a.Link  == urlLink).Any())
+                                else if(visitedAccounts != null && visitedAccounts.Where(a => a.Link  == urlLink).Any())
                                 {
                                     logger.Trace(
                                         "Ссылка {0} уже анализировалась для вакансии {1}", urlLink, vacancy.SearchWord);
+                                    continue;
+                                }
+                                else if (link.Text.Contains("LinkedIn"))
+                                {
+                                    logger.Trace(
+                                        "Ссылка {0} с именем {1} ведет на результаты поиска", urlLink, link.Text);
                                     continue;
                                 }
                                 else
@@ -187,15 +227,31 @@ namespace LinkedinBot
                             scriptExecutor.ExecuteScript(string.Format("window.open('{0}', '_blank');", urlLink));
                             var newWindowHandle = Driver.WindowHandles[1];
                             Driver.SwitchTo().Window(newWindowHandle);
-                            Thread.Sleep(TimeSpan.FromSeconds(40));
+                            //Thread.Sleep(TimeSpan.FromSeconds(40));
+                            Thread.Sleep(TimeSpan.FromSeconds(5));
 
-                            ScrollDownBySteps();
+                            Retry(
+                                action: ScrollDownBySteps,
+                                delay: 5,
+                                count: 20);
 
-                            var expandSkillsButton = Driver.FindElement(By.XPath("//*[contains(@class,'pv-skills-section__additional-skills')]"));
-                            ScrollToCoordinates(
-                                x: expandSkillsButton.Location.X,
-                                y: expandSkillsButton.Location.Y);
-                            expandSkillsButton.Click();
+                            try
+                            {
+                                var expandSkillsButton = Driver.FindElement(By.XPath("//*[contains(@class,'pv-skills-section__additional-skills')]"));
+                                ScrollToCoordinates(
+                                    x: expandSkillsButton.Location.X,
+                                    y: expandSkillsButton.Location.Y);
+                                expandSkillsButton.Click();
+                            }
+                            catch(NoSuchElementException)
+                            {
+                                logger.Trace("Не найдена кнопка раскрытия скиллов");
+                                logger.Trace("Закрываем вкладку, возращаемся к основному списку");
+                                Driver.Close();
+                                Driver.SwitchTo().Window(mainWindowHandle);
+                                continue;
+                            }
+
 
                             var skills = Driver.FindElements(By.ClassName("pv-skill-entity__skill-name"));
                             var textSkills = new List<string>();
@@ -212,7 +268,8 @@ namespace LinkedinBot
                                 .First()
                                 .Add(new XElement("employee", 
                                     new XAttribute("link", urlLink),
-                                    new XAttribute("region", region.Description)));
+                                    new XAttribute("region", region.Description),
+                                    new XAttribute("page", page)));
 
                             xmlHelper.Save();
                             xmlHelper.Load();
@@ -228,6 +285,7 @@ namespace LinkedinBot
                                     textSkills.Select(skill => new XElement("skill", skill))));
 
                             xmlHelper.Save();
+                            xmlHelper.Load();
 
                             var existKeyWordsOnPage = true;
                             foreach (KeyWordElement keyWord in vacancy.keyWords)
@@ -262,7 +320,8 @@ namespace LinkedinBot
                                     var buttonMakeContact = Driver.FindElement(By.XPath(string.Format("//*[contains(text(), '{0}')]/..", "Установить контакт")));
                                     buttonMakeContact.Click();
 
-                                    Thread.Sleep(TimeSpan.FromSeconds(10));
+                                    //Thread.Sleep(TimeSpan.FromSeconds(10));
+                                    Thread.Sleep(TimeSpan.FromSeconds(5));
 
                                     ScreenshotHelper.Make(vacancy.Id, "makeContact");
 
@@ -271,7 +330,8 @@ namespace LinkedinBot
                                     var buttonPersonalize = Driver.FindElement(By.XPath("//*[contains(@class,'send-invite__actions')]/button[contains(@class,'button-secondary-large')]"));
                                     buttonPersonalize.Click();
 
-                                    Thread.Sleep(TimeSpan.FromSeconds(10));
+                                    //Thread.Sleep(TimeSpan.FromSeconds(10));
+                                    Thread.Sleep(TimeSpan.FromSeconds(5));
 
                                     ScreenshotHelper.Make(vacancy.Id, "Personalize");
 
@@ -286,7 +346,8 @@ namespace LinkedinBot
 
                                     var buttonInvite = Driver.FindElement(By.XPath("//*[contains(@class,'send-invite__actions')]/button[contains(@class,'ml3')]"));
                                     buttonInvite.Click();
-                                    Thread.Sleep(TimeSpan.FromSeconds(30));
+                                    //Thread.Sleep(TimeSpan.FromSeconds(30));
+                                    Thread.Sleep(TimeSpan.FromSeconds(10));
 
                                     ScreenshotHelper.Make(vacancy.Id, "SentInvite");
 

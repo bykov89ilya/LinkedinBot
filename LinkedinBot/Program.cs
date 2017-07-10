@@ -8,8 +8,14 @@
         {
             using (WebTraveler = new WebTraveler())
             {
-                WebTraveler.NavigateLinkedin();
-                WebTraveler.Authorize();
+                WebTraveler.Retry(
+                    action: () => 
+                    {
+                        WebTraveler.NavigateLinkedin();
+                        WebTraveler.Authorize();
+                    },
+                    delay: 2,
+                    count: 5);
                 WebTraveler.GoSearch();
             }
         }

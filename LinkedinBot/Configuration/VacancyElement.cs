@@ -13,6 +13,24 @@ namespace LinkedinBot.Configuration
             }
         }
 
+        [ConfigurationProperty("pageFrom")]
+        public int PageFrom
+        {
+            get
+            {
+                return (int)this["pageFrom"];
+            }
+        }
+
+        [ConfigurationProperty("pageTo")]
+        public int PageTo
+        {
+            get
+            {
+                return (int)this["pageTo"];
+            }
+        }
+
         [ConfigurationProperty("description")]
         public int Description
         {
